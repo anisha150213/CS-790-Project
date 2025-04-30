@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Student Confusion Analysis</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .controls {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            align-items: center;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        select, input, button {
+            padding: 5px 10px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            padding: 8px 15px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Student Confusion Analysis</h1>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="studentSelect">Student:</label>
+                <select id="studentSelect">
+                    {% for student in students %}
+                    <option value="{{ student }}">Student {{ student }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="videoSelect">Video:</label>
+                <select id="videoSelect">
+                    {% for video in videos %}
+                    <option value="{{ video }}">Video {{ video }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="speedSlider">Speed:</label>
+                <input type="range" id="speedSlider" min="1" max="10" value="5">
+                <span id="speedValue">5x</span>
+            </div>
+
+            <div class="control-group">
+                <label for="eegSelect">EEG Data:</label>
+                <select id="eegSelect">
+                    <option value="none">None</option>
+                    <option value="alpha1">Alpha1</option>
+                    <option value="alpha2">Alpha2</option>
+                    <option value="beta1">Beta1</option>
+                    <option value="beta2">Beta2</option>
+                    <option value="delta">Delta</option>
+                    <option value="gamma1">Gamma1</option>
+                    <option value="gamma2">Gamma2</option>
+                    <option value="theta">Theta</option>
+                    <option value="all">All Waves Combined</option>
+                    <option value="selected">Alpha1, Gamma1, Theta Combined</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <button id="pauseButton">Pause</button>
+                <button id="resetButton">Reset</button>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="eegChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <canvas id="predictionChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let eegChart, predictionChart;
+        let currentData = [];
+        let animationFrame;
+        let currentIndex = 0;
+        let speed = 5;
+        let selectedEEG = 'none';
+        let isPaused = false;
+        const DISPLAY_WINDOW = 50; // Number of points to show at once
+
+        function initCharts() {
+            const eegCtx = document.getElementById('eegChart').getContext('2d');
+            const predictionCtx = document.getElementById('predictionChart').getContext('2d');
+
+            // EEG Chart
+            eegChart = new Chart(eegCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: []
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    scales: {
+                        y: {
+                            type: 'logarithmic',
+                            title: {
+                                display: true,
+                                text: 'EEG Value (log scale)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top'
+                        },
+                        annotation: {
+                            annotations: {}
+                        }
+                    }
+                }
+            });
+
+            // Prediction Chart
+            predictionChart = new Chart(predictionCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'Model Predicted Probability of Confusion',
+                            data: [],
+                            borderColor: 'red',
+                            tension: 0.1,
+                            fill: false
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 1,
+                            title: {
+                                display: true,
+                                text: 'Probability'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top'
+                        },
+                        annotation: {
+                            annotations: {
+                                threshold: {
+                                    type: 'line',
+                                    yMin: 0.40,
+                                    yMax: 0.40,
+                                    borderColor: 'rgba(0, 0, 0, 0.5)',
+                                    borderWidth: 1,
+                                    borderDash: [5, 5],
+                                    label: {
+                                        content: 'Confusion Threshold (0.40)',
+                                        enabled: true,
+                                        position: 'right'
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateCharts() {
+            if (currentIndex >= currentData.length) {
+                currentIndex = 0;
+                return;
+            }
+
+            // Debug the current position
+            console.log(`Updating charts at index ${currentIndex} of ${currentData.length}`);
+            if (currentIndex > 0) {
+                const currentPoint = currentData[currentIndex - 1];
+                console.log(`Current point: Time=${currentPoint.Timestamp_sec}, Probability=${currentPoint.Predicted_Prob_tuned}`);
+            }
+
+            // Get the window of data - no need to sort since entire dataset is already sorted
+            const displayStartIdx = Math.max(0, currentIndex - DISPLAY_WINDOW);
+            const windowData = currentData.slice(displayStartIdx, currentIndex + 1);
+            const timestamps = windowData.map(d => d.Timestamp_sec);
+
+            // Update EEG chart based on selection
+            eegChart.data.labels = timestamps;
+            if (selectedEEG === 'all') {
+                eegChart.data.datasets = [
+                    {
+                        label: 'Alpha1',
+                        data: windowData.map(d => d.Alpha1),
+                        borderColor: 'purple',
+                        tension: 0.1,
+                        fill: false
+                    },
+                    {
+                        label: 'Alpha2',
+                        data: windowData.map(d => d.Alpha2),
+                        borderColor: 'blue',
+                        tension: 0.1,
+                        fill: false
+                    },
+                    {
+                        label: 'Beta1',
+                        data: windowData.map(d => d.Beta1),
+                        borderColor: 'green',
+                        tension: 0.1,
+                        fill: false
+                    },
+                    {
+                        label: 'Beta2',
+                        data: windowData.map(d => d.Beta2),
+                        borderColor: 'lime',
+                        tension: 0.1,
+                        fill: false
+                    },
+                    {
+                        label: 'Delta',
+                        data: windowData.map(d => d.Delta),
+                        borderColor: 'cyan',
+                        tension: 0.1,
+                        fill: false
+                    },
+                    {
+                        label: 'Gamma1',
+                        data: windowData.map(d => d.Gamma1),
+                        borderColor: 'orange',
+                        tension: 0.1,
+                        fill: false
+                    },
+                    {
+                        label: 'Gamma2',
+                        data: windowData.map(d => d.Gamma2),
+                        borderColor: 'red',
+                        tension: 0.1,
+                        fill: false
+                    },
+                    {
+                        label: 'Theta',
+                        data: windowData.map(d => d.Theta),
+                        borderColor: 'brown',
+                        tension: 0.1,
+                        fill: false
+                    }
+                ];
+            } else if (selectedEEG === 'selected') {
+                eegChart.data.datasets = [
+                    {
+                        label: 'Alpha1',
+                        data: windowData.map(d => d.Alpha1),
+                        borderColor: 'purple',
+                        tension: 0.1,
+                        fill: false
+                    },
+                    {
+                        label: 'Gamma1',
+                        data: windowData.map(d => d.Gamma1),
+                        borderColor: 'orange',
+                        tension: 0.1,
+                        fill: false
+                    },
+                    {
+                        label: 'Theta',
+                        data: windowData.map(d => d.Theta),
+                        borderColor: 'brown',
+                        tension: 0.1,
+                        fill: false
+                    }
+                ];
+            } else if (selectedEEG !== 'none') {
+                eegChart.data.datasets = [{
+                    label: selectedEEG.charAt(0).toUpperCase() + selectedEEG.slice(1),
+                    data: windowData.map(d => d[selectedEEG.charAt(0).toUpperCase() + selectedEEG.slice(1)]),
+                    borderColor: 'purple',
+                    tension: 0.1,
+                    fill: false
+                }];
+            } else {
+                eegChart.data.datasets = [];
+            }
+
+            // Update prediction chart with sorted data
+            predictionChart.data.labels = timestamps;
+            predictionChart.data.datasets = [
+                {
+                    label: 'Model Predicted Probability of Confusion',
+                    data: windowData.map(d => d.Predicted_Prob_tuned),
+                    borderColor: 'red',
+                    tension: 0.1,
+                    fill: false
+                },
+                {
+                    label: 'Student Indicated Confusion',
+                    data: [],  // Empty data - just for legend
+                    borderColor: '#FF0000',
+                    borderWidth: 2,
+                    showLine: false,
+                    pointStyle: 'line',
+                    rotation: 90,
+                    pointRadius: 12,
+                    tension: 0.1,
+                    fill: false
+                }
+            ];
+
+            // Set chart options to ensure legend shows vertical line
+            predictionChart.options.plugins.legend = {
+                display: true,
+                labels: {
+                    usePointStyle: true,
+                    pointStyle: true
+                }
+            };
+
+            // Create annotations object
+            const annotations = {};
+
+            // Add confusion button press indicators
+            windowData.forEach((d, idx) => {
+                if (d.userdefined === 1) {
+                    // Add vertical line for EEG chart
+                    annotations[`confusion_eeg_${idx}`] = {
+                        type: 'line',
+                        xMin: d.Timestamp_sec,
+                        xMax: d.Timestamp_sec,
+                        yMin: 1000,
+                        yMax: 3000000,
+                        borderColor: '#FF0000',
+                        borderWidth: 2
+                    };
+
+                    // Add vertical line for prediction chart
+                    annotations[`confusion_pred_${idx}`] = {
+                        type: 'line',
+                        xMin: d.Timestamp_sec,
+                        xMax: d.Timestamp_sec,
+                        yMin: 0,
+                        yMax: 1,
+                        borderColor: '#FF0000',
+                        borderWidth: 2
+                    };
+                }
+            });
+
+            // Add threshold highlighting with improved logic
+            let thresholdRegions = [];
+            let inThresholdRegion = false;
+            let startTime = null;
+
+            // Debug
+            console.log("Checking points for threshold crossing:");
+
+            // Find regions where values cross threshold
+            for (let i = 0; i < windowData.length; i++) {
+                const point = windowData[i];
+
+                // Debug the current point
+                console.log(`Time: ${point.Timestamp_sec}, Value: ${point.Predicted_Prob_tuned}, Above threshold: ${point.Predicted_Prob_tuned >= 0.40}`);
+
+                if (point.Predicted_Prob_tuned >= 0.40) {
+                    // Starting a new threshold region
+                    if (!inThresholdRegion) {
+                        inThresholdRegion = true;
+                        startTime = point.Timestamp_sec;
+                        console.log(`Starting threshold region at ${startTime}`);
+                    }
+                } else {
+                    // Ending a threshold region
+                    if (inThresholdRegion) {
+                        // Only save regions if we have a valid start time
+                        if (startTime !== null) {
+                            thresholdRegions.push({
+                                start: startTime,
+                                end: point.Timestamp_sec
+                            });
+                            console.log(`Ending threshold region: ${startTime} to ${point.Timestamp_sec}`);
+                        }
+                        inThresholdRegion = false;
+                    }
+                }
+            }
+
+            // If we're still in a threshold region at the end of the data
+            if (inThresholdRegion && windowData.length > 0 && startTime !== null) {
+                const endTime = windowData[windowData.length - 1].Timestamp_sec;
+                thresholdRegions.push({
+                    start: startTime,
+                    end: endTime
+                });
+                console.log(`Ending final threshold region: ${startTime} to ${endTime}`);
+            }
+
+            // Debug
+            console.log("Threshold regions:", thresholdRegions);
+
+            // Double check that all regions are valid before creating annotations
+            const validThresholdRegions = thresholdRegions.filter(region => {
+                // Ensure start and end are defined and start is less than end
+                return region.start !== null &&
+                       region.end !== null &&
+                       region.start < region.end &&
+                       !isNaN(region.start) &&
+                       !isNaN(region.end);
+            });
+
+            console.log("Valid threshold regions:", validThresholdRegions);
+
+            // Create highlight annotations for each valid region
+            validThresholdRegions.forEach((region, idx) => {
+                // Add highlight on prediction chart
+                annotations[`threshold_pred_${idx}`] = {
+                    type: 'box',
+                    xMin: region.start,
+                    xMax: region.end,
+                    yMin: 0.40,
+                    yMax: 1,
+                    backgroundColor: 'rgba(255, 0, 0, 0.2)',
+                    borderColor: 'rgba(255, 0, 0, 0.3)',
+                    borderWidth: 1,
+                    drawTime: 'beforeDatasetsDraw'
+                };
+
+                // Add corresponding highlight on EEG chart
+                annotations[`threshold_eeg_${idx}`] = {
+                    type: 'box',
+                    xMin: region.start,
+                    xMax: region.end,
+                    yMin: 1000,
+                    yMax: 3000000,
+                    backgroundColor: 'rgba(255, 0, 0, 0.1)',
+                    borderColor: 'rgba(255, 0, 0, 0.2)',
+                    borderWidth: 1,
+                    drawTime: 'beforeDatasetsDraw'
+                };
+            });
+
+            // Add threshold line
+            annotations.threshold = {
+                type: 'line',
+                yMin: 0.40,
+                yMax: 0.40,
+                borderColor: 'rgba(0, 0, 0, 0.5)',
+                borderWidth: 1,
+                borderDash: [5, 5],
+                label: {
+                    content: 'Threshold (0.40)',
+                    enabled: true,
+                    position: 'right'
+                },
+                drawTime: 'beforeDatasetsDraw'
+            };
+
+            // Apply annotations to both charts
+            eegChart.options.plugins.annotation = {
+                annotations: Object.fromEntries(
+                    Object.entries(annotations).filter(([key]) => key.includes('eeg_'))
+                )
+            };
+
+            predictionChart.options.plugins.annotation = {
+                annotations: Object.fromEntries(
+                    Object.entries(annotations).filter(([key]) =>
+                        key.includes('pred_') || key === 'threshold'
+                    )
+                )
+            };
+
+            eegChart.update('none');
+            predictionChart.update('none');
+            currentIndex++;
+        }
+
+        function animate() {
+            if (!isPaused) {
+                updateCharts();
+            }
+            animationFrame = setTimeout(animate, 1000 / speed);
+        }
+
+        // Event listeners
+        document.getElementById('studentSelect').addEventListener('change', loadData);
+        document.getElementById('videoSelect').addEventListener('change', loadData);
+        document.getElementById('speedSlider').addEventListener('input', function(e) {
+            speed = e.target.value;
+            document.getElementById('speedValue').textContent = speed + 'x';
+        });
+        document.getElementById('eegSelect').addEventListener('change', function(e) {
+            selectedEEG = e.target.value;
+            loadData();
+        });
+
+        document.getElementById('pauseButton').addEventListener('click', function() {
+            isPaused = !isPaused;
+            this.textContent = isPaused ? 'Resume' : 'Pause';
+        });
+
+        document.getElementById('resetButton').addEventListener('click', function() {
+            currentIndex = 0;
+            loadData();
+        });
+
+        function loadData() {
+            const studentId = document.getElementById('studentSelect').value;
+            const videoId = document.getElementById('videoSelect').value;
+
+            fetch(`/get_data/${studentId}/${videoId}`)
+                .then(response => response.json())
+                .then(data => {
+                    // Sort the entire dataset by timestamp before starting
+                    currentData = data.sort((a, b) => a.Timestamp_sec - b.Timestamp_sec);
+
+                    // Ensure all numeric fields are actually numbers
+                    currentData.forEach(d => {
+                        d.Timestamp_sec = parseFloat(d.Timestamp_sec);
+                        d.Predicted_Prob_tuned = parseFloat(d.Predicted_Prob_tuned);
+                        d.Alpha1 = parseFloat(d.Alpha1);
+                        d.Alpha2 = parseFloat(d.Alpha2);
+                        d.Beta1 = parseFloat(d.Beta1);
+                        d.Beta2 = parseFloat(d.Beta2);
+                        d.Delta = parseFloat(d.Delta);
+                        d.Gamma1 = parseFloat(d.Gamma1);
+                        d.Gamma2 = parseFloat(d.Gamma2);
+                        d.Theta = parseFloat(d.Theta);
+                        d.userdefined = parseInt(d.userdefined || 0);
+                    });
+
+                    console.log("Data loaded:", currentData.slice(0, 5));
+
+                    currentIndex = 0;
+                    isPaused = false;
+                    document.getElementById('pauseButton').textContent = 'Pause';
+
+                    // Reset charts
+                    eegChart.data.labels = [];
+                    eegChart.data.datasets = [];
+                    predictionChart.data.labels = [];
+                    predictionChart.data.datasets = [
+                        {
+                            label: 'Model Predicted Probability of Confusion',
+                            data: [],
+                            borderColor: 'red',
+                            tension: 0.1,
+                            fill: false
+                        },
+                        {
+                            label: 'Student Indicated Confusion',
+                            data: [],
+                            borderColor: '#FF0000',
+                            borderWidth: 2,
+                            pointStyle: 'line',
+                            rotation: 90,
+                            tension: 0.1,
+                            fill: false
+                        }
+                    ];
+
+                    if (animationFrame) {
+                        clearTimeout(animationFrame);
+                    }
+                    animate();
+                })
+                .catch(error => {
+                    console.error("Error loading data:", error);
+                });
+        }
+
+        // Initialize
+        initCharts();
+        loadData();
+    </script>
+</body>
+</html>
