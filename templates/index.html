@@ -128,6 +128,45 @@
         let isPaused = false;
         const DISPLAY_WINDOW = 50; // Number of points to show at once
 
+        // Store all threshold regions globally
+        let allThresholdRegions = [];
+
+        // Function to detect all threshold regions in the full dataset
+        function detectAllThresholdRegions() {
+            allThresholdRegions = [];
+            let inThresholdRegion = false;
+            let startTime = null;
+            for (let i = 0; i < currentData.length; i++) {
+                const point = currentData[i];
+                const prevPoint = i > 0 ? currentData[i - 1] : null;
+                if (point.Predicted_Prob_tuned >= 0.40) {
+                    if (!inThresholdRegion) {
+                        inThresholdRegion = true;
+                        startTime = point.Timestamp_sec;
+                    }
+                } else {
+                    if (inThresholdRegion) {
+                        if (startTime !== null) {
+                            // Use previous point's timestamp as end
+                            const endTime = prevPoint ? prevPoint.Timestamp_sec : point.Timestamp_sec;
+                            allThresholdRegions.push({
+                                start: startTime,
+                                end: endTime
+                            });
+                        }
+                        inThresholdRegion = false;
+                    }
+                }
+            }
+            if (inThresholdRegion && currentData.length > 0 && startTime !== null) {
+                const endTime = currentData[currentData.length - 1].Timestamp_sec;
+                allThresholdRegions.push({
+                    start: startTime,
+                    end: endTime
+                });
+            }
+        }
+
         function initCharts() {
             const eegCtx = document.getElementById('eegChart').getContext('2d');
             const predictionCtx = document.getElementById('predictionChart').getContext('2d');
@@ -408,68 +447,13 @@
                 }
             });
 
-            // Add threshold highlighting with improved logic
-            let thresholdRegions = [];
-            let inThresholdRegion = false;
-            let startTime = null;
-
-            // Debug
-            console.log("Checking points for threshold crossing:");
-
-            // Find regions where values cross threshold
-            for (let i = 0; i < windowData.length; i++) {
-                const point = windowData[i];
-
-                // Debug the current point
-                console.log(`Time: ${point.Timestamp_sec}, Value: ${point.Predicted_Prob_tuned}, Above threshold: ${point.Predicted_Prob_tuned >= 0.40}`);
-
-                if (point.Predicted_Prob_tuned >= 0.40) {
-                    // Starting a new threshold region
-                    if (!inThresholdRegion) {
-                        inThresholdRegion = true;
-                        startTime = point.Timestamp_sec;
-                        console.log(`Starting threshold region at ${startTime}`);
-                    }
-                } else {
-                    // Ending a threshold region
-                    if (inThresholdRegion) {
-                        // Only save regions if we have a valid start time
-                        if (startTime !== null) {
-                            thresholdRegions.push({
-                                start: startTime,
-                                end: point.Timestamp_sec
-                            });
-                            console.log(`Ending threshold region: ${startTime} to ${point.Timestamp_sec}`);
-                        }
-                        inThresholdRegion = false;
-                    }
-                }
-            }
-
-            // If we're still in a threshold region at the end of the data
-            if (inThresholdRegion && windowData.length > 0 && startTime !== null) {
-                const endTime = windowData[windowData.length - 1].Timestamp_sec;
-                thresholdRegions.push({
-                    start: startTime,
-                    end: endTime
-                });
-                console.log(`Ending final threshold region: ${startTime} to ${endTime}`);
-            }
-
-            // Debug
-            console.log("Threshold regions:", thresholdRegions);
-
-            // Double check that all regions are valid before creating annotations
-            const validThresholdRegions = thresholdRegions.filter(region => {
-                // Ensure start and end are defined and start is less than end
-                return region.start !== null &&
-                       region.end !== null &&
-                       region.start < region.end &&
-                       !isNaN(region.start) &&
-                       !isNaN(region.end);
-            });
-
-            console.log("Valid threshold regions:", validThresholdRegions);
+            // Only keep threshold regions that overlap with the current window
+            const windowStart = timestamps[0];
+            const windowEnd = timestamps[timestamps.length - 1];
+            const validThresholdRegions = allThresholdRegions.filter(region =>
+                region.end > windowStart && region.start < windowEnd &&
+                region.start !== null && region.end !== null && !isNaN(region.start) && !isNaN(region.end) && region.start < region.end
+            );
 
             // Create highlight annotations for each valid region
             validThresholdRegions.forEach((region, idx) => {
@@ -485,7 +469,6 @@
                     borderWidth: 1,
                     drawTime: 'beforeDatasetsDraw'
                 };
-
                 // Add corresponding highlight on EEG chart
                 annotations[`threshold_eeg_${idx}`] = {
                     type: 'box',
@@ -498,6 +481,9 @@
                     borderWidth: 1,
                     drawTime: 'beforeDatasetsDraw'
                 };
+                console.log(`[THRESHOLD] Annotation created for region: ${region.start} to ${region.end}`);
+                console.log('Chart x-axis ticks:', eegChart.data.labels);
+                console.log('Box xMin:', region.start);
             });
 
             // Add threshold line
@@ -531,8 +517,8 @@
                 )
             };
 
-            eegChart.update('none');
-            predictionChart.update('none');
+            eegChart.update();
+            predictionChart.update();
             currentIndex++;
         }
 
@@ -623,6 +609,8 @@
                     if (animationFrame) {
                         clearTimeout(animationFrame);
                     }
+
+                    detectAllThresholdRegions();
                     animate();
                 })
                 .catch(error => {
